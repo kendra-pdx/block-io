@@ -1,0 +1,15 @@
+[package]
+name = "block-io"
+version = "0.1.0"
+edition = "2024"
+publish = ["kellnr"]
+
+[dependencies]
+bytes = { version = "1.11", default-features = false }
+rancor = "0.1"
+strum = { version = "0.28", default-features = false, features = ["derive"] }
+thiserror = { version = "2.0", default-features = false }
+
+[dev-dependencies]
+rkyv = "0.8"
+rstest = "0.26"
