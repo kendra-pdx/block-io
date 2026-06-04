@@ -5,6 +5,10 @@ use rancor::Source;
 #[error("block was read, but not taken")]
 pub struct BlockNotTakenError;
 
+#[derive(Debug, thiserror::Error)]
+#[error("block did not begin with expected")]
+pub struct ExpectedMismatchError;
+
 #[derive(Default)]
 pub struct ReadState {
     bytes_read: usize,
@@ -13,13 +17,20 @@ pub struct ReadState {
 
 #[derive(strum::EnumTryAs, strum::EnumIs)]
 pub enum IoBlockReader {
-    Init,
+    /// initialize the block reader with the expected signature
+    Init(u16),
+    /// reading 2 bytes to match the signature
+    ReadingExpect { expect: u16, read_state: ReadState },
+    /// reading 4 bytes to determine the data size
     ReadingBlockSize(ReadState),
+    /// reading N bytes of data
     ReadingBlock {
         block_size: u32,
         read_state: ReadState,
     },
+    /// read all of the data and now have a set of bytes to take
     Block(Bytes),
+    /// something went wrong with reading
     Error(rancor::Error),
 }
 
@@ -33,36 +44,56 @@ impl ReadState {
 impl IoBlockReader {
     pub fn update(self, byte: u8) -> Self {
         match self {
-            IoBlockReader::Init => Self::ReadingBlockSize(ReadState::default()).update(byte),
-            IoBlockReader::ReadingBlockSize(mut read_state) => {
+            IoBlockReader::Init(expect) => Self::ReadingExpect {
+                expect,
+                read_state: ReadState::default(),
+            }
+            .update(byte),
+            IoBlockReader::ReadingExpect {
+                expect,
+                mut read_state,
+            } => {
+                read_state.push(byte);
+                if read_state.bytes_read == size_of::<u16>() {
+                    let actual = read_state.buffer.get_u16();
+                    if actual == expect {
+                        Self::ReadingBlockSize(ReadState::default())
+                    } else {
+                        Self::Error(rancor::Error::new(ExpectedMismatchError))
+                    }
+                } else {
+                    Self::ReadingExpect { expect, read_state }
+                }
+            }
+            Self::ReadingBlockSize(mut read_state) => {
                 read_state.push(byte);
                 if read_state.bytes_read == size_of::<u32>() {
                     let block_size = read_state.buffer.get_u32();
-                    IoBlockReader::ReadingBlock {
+                    Self::ReadingBlock {
                         block_size,
                         read_state: ReadState::default(),
                     }
                 } else {
-                    IoBlockReader::ReadingBlockSize(read_state)
+                    Self::ReadingBlockSize(read_state)
                 }
             }
-            IoBlockReader::ReadingBlock {
+            Self::ReadingBlock {
                 block_size,
                 mut read_state,
             } => {
                 read_state.push(byte);
                 if read_state.bytes_read as u32 == block_size {
                     let block = read_state.buffer.into();
-                    IoBlockReader::Block(block)
+                    Self::Block(block)
                 } else {
-                    IoBlockReader::ReadingBlock {
+                    Self::ReadingBlock {
                         block_size,
                         read_state,
                     }
                 }
             }
-            IoBlockReader::Error(_) => self,
-            IoBlockReader::Block(_) => Self::Error(rancor::Error::new(BlockNotTakenError)),
+            Self::Error(_) => self,
+            Self::Block(_) => Self::Error(rancor::Error::new(BlockNotTakenError)),
         }
     }
 }
@@ -83,13 +114,14 @@ mod tests {
         let io_len = bytes.len();
 
         let mut buffer = BytesMut::new();
+        buffer.put_u16(0x4269);
         buffer.put_u32(io_len as u32);
         buffer.put(&bytes[..]);
         let mut bytes = buffer.iter();
 
-        assert_eq!(bytes.len(), size_of::<u32>() + io_len);
+        assert_eq!(bytes.len(), size_of::<u16>() + size_of::<u32>() + io_len);
 
-        let mut state = IoBlockReader::Init;
+        let mut state = IoBlockReader::Init(0x4269);
 
         while let Some(byte) = bytes.next()
             && !state.is_block()
@@ -103,18 +135,19 @@ mod tests {
     }
 
     #[rstest]
-    fn io_block_reader_block_update_error(message_1: Record) {
+    fn io_block_reader_block_update_block_not_taken(message_1: Record) {
         let bytes = message_1.to_bytes().unwrap();
         let io_len = bytes.len();
 
         let mut buffer = BytesMut::new();
+        buffer.put_u16(0x4269);
         buffer.put_u32(io_len as u32);
         buffer.put(&bytes[..]);
         let mut bytes = buffer.iter();
 
-        assert_eq!(bytes.len(), size_of::<u32>() + io_len);
+        assert_eq!(bytes.len(), size_of::<u16>() + size_of::<u32>() + io_len);
 
-        let mut state = IoBlockReader::Init;
+        let mut state = IoBlockReader::Init(0x4269);
 
         while let Some(byte) = bytes.next()
             && !state.is_block()
@@ -125,6 +158,33 @@ mod tests {
         assert!(state.is_block());
 
         state = state.update(b'?');
+        assert!(state.is_error());
+
+        state = state.update(b'?');
+        assert!(state.is_error());
+    }
+
+    #[rstest]
+    fn io_block_reader_block_update_unexpected(message_1: Record) {
+        let bytes = message_1.to_bytes().unwrap();
+        let io_len = bytes.len();
+
+        let mut buffer = BytesMut::new();
+        buffer.put_u16(0x0000);
+        buffer.put_u32(io_len as u32);
+        buffer.put(&bytes[..]);
+        let mut bytes = buffer.iter();
+
+        assert_eq!(bytes.len(), size_of::<u16>() + size_of::<u32>() + io_len);
+
+        let mut state = IoBlockReader::Init(0x4269);
+
+        while let Some(byte) = bytes.next()
+            && !state.is_block()
+        {
+            state = state.update(*byte);
+        }
+
         assert!(state.is_error());
 
         state = state.update(b'?');
