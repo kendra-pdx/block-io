@@ -64,6 +64,10 @@ impl ReadState {
             None
         }
     }
+
+    pub fn bytes(&self) -> &[u8] {
+        &self.buffer
+    }
 }
 
 impl IoBlockReader {
@@ -144,6 +148,8 @@ mod tests {
         let buffer = BytesMut::from_iter(b"hello world\n");
         let state = ReadState { buffer };
         assert_eq!(Some(Bytes::from_static(b"\n")), state.tail_n::<1>());
+
+        assert_eq!(12, state.bytes().len());
     }
 
     #[rstest]
