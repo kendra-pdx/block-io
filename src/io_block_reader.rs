@@ -47,21 +47,19 @@ impl ReadState {
 
     fn tail_u16(&self) -> Option<u16> {
         const SIZE: usize = size_of::<u16>();
-        if self.bytes_read() >= SIZE {
-            let ix = self.buffer.len() - SIZE;
-            let mut bytes = Bytes::copy_from_slice(&self.buffer[ix..]);
-            Some(bytes.get_u16())
-        } else {
-            None
-        }
+        self.tail_n::<SIZE>().map(|mut bytes| bytes.get_u16())
     }
 
     fn tail_u32(&self) -> Option<u32> {
         const SIZE: usize = size_of::<u32>();
-        if self.bytes_read() >= SIZE {
-            let ix = self.buffer.len() - SIZE;
-            let mut bytes = Bytes::copy_from_slice(&self.buffer[ix..]);
-            Some(bytes.get_u32())
+        self.tail_n::<SIZE>().map(|mut bytes| bytes.get_u32())
+    }
+
+    pub fn tail_n<const N: usize>(&self) -> Option<Bytes> {
+        if self.bytes_read() >= N {
+            let ix = self.buffer.len() - N;
+            let bytes = Bytes::copy_from_slice(&self.buffer[ix..]);
+            Some(bytes)
         } else {
             None
         }
@@ -129,7 +127,24 @@ mod tests {
     use rkyv::{Archive, Deserialize, Serialize};
     use rstest::{fixture, rstest};
 
-    use crate::{BlockIoFormat, IoBlockReader};
+    use crate::{BlockIoFormat, IoBlockReader, ReadState};
+
+    #[test]
+    fn read_state_tail() {
+        let mut buffer = BytesMut::new();
+        buffer.put_u16(0x4269);
+        let state = ReadState { buffer };
+        assert_eq!(Some(0x4269), state.tail_u16());
+
+        let mut buffer = BytesMut::new();
+        buffer.put_u32(0xDEAD_BEEF);
+        let state = ReadState { buffer };
+        assert_eq!(Some(0xDEAD_BEEF), state.tail_u32());
+
+        let buffer = BytesMut::from_iter(b"hello world\n");
+        let state = ReadState { buffer };
+        assert_eq!(Some(Bytes::from_static(b"\n")), state.tail_n::<1>());
+    }
 
     #[rstest]
     fn io_block_reader(message_1: Record) {
